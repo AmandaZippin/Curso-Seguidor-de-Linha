@@ -54,6 +54,12 @@ const unsigned long intervaloDir = 50; // 50 milissegundos
 unsigned long ultimoTempoEsq = 0;
 const unsigned long intervaloEsq = 100; // 100 milissegundos
 
+// Detecção de saída da pista
+const unsigned long tempoMaxFora = 1500;  // 1,5 segundos fora da pista
+const int limiarLinha = 200;              // abaixo disso o sensor não vê a linha
+unsigned long inicioForaPista = 0;
+bool foraDaPista = false;
+
 // Definir a velocidade pelos trajetos
 #define N_FAIXA 0 // Coloque a quantidade de faixas da esquerda + 1
 int velTrajeto[N_FAIXA] = {}; // Coloque as velocidades para cada um dos trajetos
@@ -76,6 +82,8 @@ void pararMotores();
 void calibrarSensores();
 void seguirLinha();
 void lerSensores();
+void lerSensorLateral(int sensorLateral);
+bool saiuDaPista();
 float controleLinha();
 
 
@@ -134,6 +142,7 @@ void loop() {
       
     case CALIBRANDO:
       estadoAtual = CORRENDO;
+      foraDaPista = false;   // começa a corrida sem contagem de "fora da pista"
       Serial.println("Calibração concluída. Iniciando corrida!");
       delay(3000); // Aguarda 3s antes da corrida
       break;
@@ -144,6 +153,7 @@ void loop() {
         botaoAtual = false;
         N_Dir = 0;
         N_Esq = 0;
+        foraDaPista = false;
         pararMotores();
         Serial.println("Parando robô. Pressione o botão para recalibrar.");
       } else {
@@ -164,7 +174,7 @@ void calibrarSensores() {
   
   unsigned long tempoInicial = millis();
   
-  // Girar para a direita por 3 segundos
+  // Girar para a direita por 5 segundos
   acelerar(60, -60);
   while (millis() - tempoInicial < 5000) {
     lerEMaisMinMax();
@@ -231,6 +241,14 @@ void seguirLinha() {
 
   lerSensores();
 
+  // Se ficou mais de 1,5 s sem enxergar a linha, desliga o robô
+  if (saiuDaPista()) {
+    pararMotores();
+    botaoAtual = true;   // o loop() volta o estado para ESPERANDO
+    Serial.println("Fora da pista! Parando.");
+    return;
+  }
+
   lerSensorLateral(sensorEsq);
   lerSensorLateral(sensorDir);
 
@@ -255,9 +273,14 @@ void seguirLinha() {
   float derivativo = erro - erroAnterior;
   float pid = (Kp * erro) + (Kd * derivativo);
   erroAnterior = erro;
-  
-  int velEsquerda = velBase + pid;
-  int velDireita = velBase - pid;
+
+  int vel = velBase;                 // começa com a velocidade padrão
+  if (N_Esq < N_FAIXA) {             // só consulta a lista se N_Esq estiver dentro dela
+    vel = velTrajeto[N_Esq];         // pega a velocidade do trecho atual
+  }
+
+  int velEsquerda = vel + pid;
+  int velDireita  = vel - pid;
   
   velEsquerda = constrain(velEsquerda, velMin, velMax);
   velDireita = constrain(velDireita, velMin, velMax);
@@ -272,6 +295,31 @@ void lerSensores() {
     valorSensores[i] = map(leitura, minSensor[i], maxSensor[i], 0, 1000);
     valorSensores[i] = constrain(valorSensores[i], 0, 1000);
   }
+}
+
+// Retorna true se nenhum sensor central enxerga a linha há mais de tempoMaxFora
+bool saiuDaPista() {
+  // A linha está visível se pelo menos 1 sensor passa do limiar
+  bool linhaVisivel = false;
+  for (int i = 0; i < NUM_SEN; i++) {
+    if (valorSensores[i] > limiarLinha) {
+      linhaVisivel = true;
+      break;
+    }
+  }
+
+  if (linhaVisivel) {
+    foraDaPista = false;           // voltou para a pista, zera
+    return false;
+  }
+
+  // Linha não visível
+  if (!foraDaPista) {
+    foraDaPista = true;            // acabou de sair: começa a contar
+    inicioForaPista = millis();
+  }
+
+  return (millis() - inicioForaPista >= tempoMaxFora);
 }
 
 void lerSensorLateral(int sensorLateral){
